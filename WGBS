@@ -1,0 +1,134 @@
+Trim galore可以自动检测adapter对NGS数据进行质量过滤，还可以查看质量分布图。也就是等于fastqc+trimmomatic。trim_galore适用于所有高通量测序，包括RRBS(Reduced Representation Bisulfite-Seq ), Illumina、Nextera和smallRNA测序平台的双端和单端数据
+Trim_galore的工作流程：
+###首先去除低质量碱基,随后去除3'端的adaptor,如果没有指定具体的adaptor,程序会自动检测前1miilion的序列
+'# 安装Trim galore
+conda install -c bioconda trim-galore -y
+
+fastqc --noextract -t 10 -f fastq -o ./fastqc ./rawdata/*_1.fastq.gz
+fastqc --noextract -t 10 -f fastq -o ./fastqc ./rawdata/*_2.fastq.gz
+# 双端测序数据
+cleandata=./1_trim_galore
+rawdata=./0_rawdata
+cat sample.txt | while read id
+do
+echo "trim_galore --fastqc --paired -o ./1_trim_galore ./0_rawdata/${id}_1.fastq.gz ./0_rawdata/${id}_2.fastq.gz" 
+done > trim_galore.sh
+####数据质控
+在比对之前，需要加入lambda序列数据，lambda序列是在重硫酸盐实验前人为加入的一段序列用来评估重硫酸盐的转化效率，这个一般由为你测序的公司提供，所以我们这一步就将其合并到参考基因组中
+###参bismark_genome_preparation --bowtie2 --parallel 10 /data/wangji/wgbs/genome > bismark_genome_preparation.log考基因组转化######
+####bismark  mapping##########################
+bismark --bowtie2 -p 8 -o ./2_bamfile --genome /work/home/wklgroup01/wgbs/genome -1 ./1_trim_galore/${id}_1_val_1.fq.gz -2 ./1_trim_galore/${id}_2_val_2.fq.gz
+bismark -N 0 -L 20 \
+    --un --ambiguous --sam \
+    --bowtie2 \
+    --path_to_bowtie2 ~/miniconda3/envs/wgbs/bin/ \
+    --parallel 10 \
+    -o ./bamfile \
+    --fastq \
+    --prefix SRR6457892 \
+    --genome /data/wangji/wgbs/smk/pig_genome \
+    -1 ./SRR6457892_1_val_1.fq.gz \
+    -2 /data2/zhangzipeng/wang/wgbs/cleandata/SRR6457892_2_val_2.fq.gz
+
+--multicore: 决定了以多少线程同时运行,运行的时候会产生相同数量的temp文件,temp文件会有正常的C_to_T转换
+-gzip:输出文件压缩  -p这个参数是botie2的参数,指定线程数
+######################################mapping 后 process##############################################
+比对后的数据处理去除重复序列
+RRBS一定不要做这一步
+
+cat sample.txt | while read id
+do
+echo "deduplicate_bismark --bam -p ./2_bamfile/${id}_1_val_1_bismark_bt2_pe.bam --output_dir ./3_duplicate/ &"
+done > bismark.sh
+######################extact methyl site information #########################################
+ 后续的plot文件需要Perl模块GD::Graph安装
+# conda install -c bioconda perl-gdgraph -y
+bismark_methylation_extractor -p --gzip --no_overlap --comprehensive --bedGraph --count --CX_context --cytosine_report --buffer_size 20G --genome_folder /work/home/wklgroup01/wgbs/genome/ -o testfile_report ~/bismark_example/03duplicate/test.file.R1_bismark_bt2_pe.deduplicated.bam &
+
+bismark_methylation_extractor --pair-end --comprehensive --no-overlap --bedGraph --counts --report --cytosine_report --genome_folder /work/home/wklgroup01/wgbs/genome ../3_duplicate/*.bam -o ../4_methylation_result
+
+ls *.sam | awk '{print "\"" $0 "\""}' | paste -sd ","
+# Define an array of input files
+files=(
+"SRR25022243_1_val_1_bismark_bt2_pe.deduplicated.sam"
+"SRR15132626_1_val_1_bismark_bt2_pe.deduplicated.sam
+--comprehensive ：合并所有四个可能的特定链，将甲基化信息转换为context-dependent的输出文件
+--no_overlap：避免因双端读取read_1和read_2理论上的重叠，导致甲基化重复计算。可能会删去相当大部分的数据，对于双端数据的处理，默认情况下此选项处于启用状态，可以使用--include_overlap禁用。
+-p/--paired-end：前一步双端数据产生的结果文件
+--bedGraph：指将产生一个BedGraph文件存储CpG的甲基化信息（不与--CX联用，仅产生CpG信息）
+--CX/--CX_context：与--bedGraph联用，产生一个包含三种类型甲基化信息的BedGraph文件;与--cytosine_report联用，产生一个包含三种类型甲基化信息的全基因组甲基化报告
+--cytosine_report：指将产生一个存储CpG的甲基化信息的报告（不与--CX联用时，仅产生CpG信息），默认情况坐标系基于 1
+--buffer_size：甲基化信息进行排序时指定内存，默认为2G
+--zero_based：使用基于 0 的基因组坐标而不是基于 1 的坐标，默认值：OFF
+--split_by_chromosome：分染色体输出
+--genome_folder：包含未修改的参考基因组和bismark_genome_preparation创建的子文件夹(CT_conversion/和GA_conversion/）的文件夹的路径，即~/bismark_example/01index/
+:BAM 格式的 Bismark 结果文件
+###############################################################
+
+test.file.R1_bismark_bt2_pe.deduplicated.bedGraph.gz
+# 使用zcat进行查看
+zcat test.file.R1_bismark_bt2_pe.deduplicated.bedGraph.gz | head -n 10
+col1 : 染色体编号
+col2 : 胞嘧啶（c）起始位置信息
+col3 : 胞嘧啶（c）终止位置信息
+col4 : 甲基化率
+
+3、test.file.R1_bismark_bt2_pe.deduplicated.bismark.cov.gz
+由于甲基化百分数本身并不能提供在某一位置检测到的甲基化或非甲基化read的实际read覆盖率，bismark2bedGraph还会输出一个coverage文件(使用基于1的基因组坐标)，该文件具有两个附加列:
+
+col5 : 甲基化数目
+col6 : 非甲基化数目
+# 使用zcat进行查看
+zcat test.file.R1_bismark_bt2_pe.deduplicated.bismark.cov.gz | head -n 10
+# 使用解压后SRR5582006_1_val_1_bismark_bt2_pe.deduplicated.bismark.cov文件输出NW_018085246的甲基化信息
+grep -n NW_018085246 SRR5582006_1_val_1_bismark_bt2_pe.deduplicated.bismark.cov > NW_018085246.cov.txt
+# head NW_018085246.cov.txt
+# 48814275:NW_018085246.1	749	749	0	0	1
+# 48814276:NW_018085246.1	802	802	100	1	0
+# 48814277:NW_018085246.1	821	821	100	1	0
+
+# 简单处理文件
+## 依据冒号分割，取第二列
+cut -d ":" -f 2 NW_018085246.cov.txt > NW_018085246.cov.txt.1 && mv NW_018085246.cov.txt.1 NW_018085246.cov.txt
+## 增加行名：Chromosome	Start	End	Feature	methy_level
+4、test.file.R1_bismark_bt2_pe.deduplicated.CX_report.txt
+默认情况下只考虑CpG背景中的胞嘧啶，但是可以通过使用--CX 扩展到任何序列背景中的胞嘧啶
+
+col1 : 染色体编号
+col2 : 位置
+col3 : 正负链信息
+col4 : 甲基化碱基数目
+col5 : 非甲基化碱基数目
+col6 : 类型
+col7 : 三核苷酸背景
+5、test.file.R1_bismark_bt2_pe.deduplicated.M-bias.txt/...R1.png/...R2.png
+#reads中每个可能位置的甲基化比例
+CpG context (R1)
+col1 : read position
+col2 : 甲基化count（count methylated）
+col3 : 非甲基化count（count unmethylated）
+col4 : 甲基化率（beta）
+col5 : 总coverage
+6、test.file.R1_bismark_bt2_pe.deduplicated_splitting_report.txt：甲基化总体报告
+
+# 例如直接提取SRR15132626_1_val_1_bismark_bt2_pe.deduplicated.bedGraph文件中NW_018085246.1
+grep "NW_018085246.1" SRR15132626_1_val_1_bismark_bt2_pe.deduplicated.bedGraph > NW_018085246.1.bedGraph
+# 如果是gz文件，可以使用
+zcat SRR15132626_1_val_1_bismark_bt2_pe.deduplicated.bedGraph.gz | grep "NW_018085246.1" > NW_018085246.1.bedGraph
+
+# 让目录下的所有bedGraph.gz文件只保留NW_018085246.1染色体的信息
+ls *.bedGraph.gz | while read id
+do
+echo "zcat ${id} | grep \"NW_018085246.1\" > NW_018085246.1.bedGraph.${id}"
+done > NW_018085246.1.bedGraph.sh
+###############################################################################################################
+# 让目录下的所有NW_018085246.1文件只保留第二列大于139027小于144527的行
+ls *.NW_018085246.1.bedGraph | while read id
+do
+echo "awk '{if(\$2>139027 && \$2<144527) print \$0}' ${id} > 1${id} & rm ${id}"
+done > NW_018085246.1.bedGraph.sh
+###############################################################################
+
+
+
+
