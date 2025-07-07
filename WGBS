@@ -40,6 +40,17 @@ cat sample.txt | while read id
 do
 echo "deduplicate_bismark --bam -p ./2_bamfile/${id}_1_val_1_bismark_bt2_pe.bam --output_dir ./3_duplicate/ &"
 done > bismark.sh
+
+picard MarkDuplicates \
+    I=bismark_results/sample.bam \          # 输入 Bismark 比对的 BAM
+    O=bismark_results/sample_deduplicated.bam \  # 输出去重 BAM
+    M=bismark_results/markdup_metrics.txt \ # 记录重复率等统计信息
+    REMOVE_DUPLICATES=true \                # 直接删除重复 reads
+    BARCODE_TAG=XM \                        # 使用 XM 标签辅助判断唯一性
+    ATTRIBUTES_TO_RETAIN=XM \               # 保留甲基化标签
+    CREATE_INDEX=true                       # 生成 .bai 索引文件
+
+
 ######################extact methyl site information #########################################
  后续的plot文件需要Perl模块GD::Graph安装
 # conda install -c bioconda perl-gdgraph -y
